@@ -236,21 +236,24 @@ def ech(o, h="320px"):
 
 
 def calendar_opt(vals, mx, label):
-    """Календарь: в клетке число дня ({b}); при наведении — значение ({c}, проверенный шаблон)."""
-    data = []
+    """Клетка = число дня; подсказка = «1.11 - 21.3 тн» (hover-слой с name)."""
+    cells, hover = [], []
     for d, v in vals.items():
         d = pd.to_datetime(d)
-        data.append({"name": str(d.day),
-                     "value": [d.strftime("%Y-%m-%d"), round(float(v), 1)]})
+        q = round(float(v), 1)
+        iso = d.strftime("%Y-%m-%d")
+        cells.append({"name": str(d.day), "value": [iso, q]})
+        hover.append({"name": f"{d.day}.{d.month} - {q:.1f} {label}", "value": [iso, q]})
     return {
         "backgroundColor": "transparent",
         "tooltip": {"trigger": "item", "confine": True,
-                    "formatter": "{c} " + label,
                     "backgroundColor": PANEL, "borderColor": GOLD,
                     "textStyle": {"color": CREAM, "fontSize": 12}},
         "visualMap": {
             "min": 0, "max": max(float(mx), 1.0),
-            "dimension": 1, "seriesIndex": 0, "calculable": False,
+            "dimension": 1,
+            "seriesIndex": 0,
+            "calculable": False,
             "orient": "horizontal", "left": "center", "bottom": 10,
             "inRange": {"color": ["#132a21", SAGE, GOLD]},
             "textStyle": {"color": MUTED}
@@ -265,16 +268,23 @@ def calendar_opt(vals, mx, label):
             "monthLabel": {"color": GOLD, "nameMap": RU_MONTHS, "fontSize": 13, "margin": 6},
             "yearLabel": {"show": False}
         },
-        "series": {
-            "type": "heatmap",
-            "coordinateSystem": "calendar",
-            "data": data,
-            "label": {"show": True, "formatter": "{b}",
-                      "fontSize": 10, "fontWeight": 700,
-                      "color": CREAM, "textBorderColor": PINE, "textBorderWidth": 2},
-            "itemStyle": {"borderRadius": 4},
-            "emphasis": {"itemStyle": {"shadowBlur": 12, "shadowColor": "rgba(216,180,90,.5)"}}
-        }
+        "series": [
+            # видимый слой: цвет по тоннам + число дня в клетке
+            {"type": "heatmap", "coordinateSystem": "calendar", "data": cells,
+             "tooltip": {"show": False},
+             "label": {"show": True, "formatter": "{b}",
+                       "fontSize": 10, "fontWeight": 700,
+                       "color": CREAM, "textBorderColor": PINE, "textBorderWidth": 2},
+             "itemStyle": {"borderRadius": 4},
+             "emphasis": {"itemStyle": {"shadowBlur": 12, "shadowColor": "rgba(216,180,90,.5)"}}},
+            # невидимый hover-слой: отдаёт подсказку «1.11 - 21.3 тн»
+            {"type": "heatmap", "coordinateSystem": "calendar", "data": hover,
+             "tooltip": {"show": True, "formatter": "{b}"},
+             "label": {"show": False},
+             "itemStyle": {"color": "rgba(0,0,0,0)", "borderWidth": 0},
+             "emphasis": {"itemStyle": {"color": "rgba(216,180,90,.18)", "borderWidth": 0}},
+             "z": 3}
+        ]
     }
 
 
