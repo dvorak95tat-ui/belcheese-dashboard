@@ -1,21 +1,17 @@
 # app.py — Беловежские сыры · аналитика. Навигация в сайдбаре, без загрузчика, без сверки.
 import re
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from streamlit_echarts import st_echarts
-
-try:
-    from streamlit_echarts import JsCode
-except Exception:
-    JsCode = None
 
 st.set_page_config(page_title="Беловежские сыры · аналитика", page_icon="🌿", layout="wide")
 
 PINE, PANEL, CREAM, MUTED = "#0d1f18", "#132a21", "#f2ede3", "#93a69b"
 GOLD, AMBER, SAGE, TERRA, SKY = "#d8b45a", "#e0a43c", "#7fa88f", "#c4574e", "#8fb6c9"
 GRID, PAL = "rgba(242,237,227,.06)", ["#d8b45a", "#7fa88f", "#e0a43c", "#8fb6c9", "#c4574e", "#93a69b"]
-RU_DAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]
+RU_DAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]  # индекс 0 = воскресенье
 RU_MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
              "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
@@ -53,6 +49,7 @@ section[data-testid="stSidebar"] button[kind="primary"]{background:linear-gradie
   background:rgba(216,180,90,.05);border-radius:0 10px 10px 0}
 </style>""", unsafe_allow_html=True)
 
+# ---------- парсер: секции + имена строк ----------
 DATE_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
 
 
@@ -68,7 +65,20 @@ def clean_num(v):
         return 0.0
 
 
-def fmt(x, d=0): return f"{x:,.{d}f}".replace(",", " ")
+def fmt(x, d=0): return f"{float(x):,.{d}f}".replace(",", " ")
+
+
+def to_py(obj):
+    """numpy-типы -> стандартные Python-типы для JSON-сериализации ECharts."""
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return [to_py(v) for v in obj.tolist()]
+    if isinstance(obj, dict):
+        return {k: to_py(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_py(v) for v in obj]
+    return obj
 
 
 @st.cache_data
@@ -123,11 +133,12 @@ def ser(tidy, dates, k):
 try:
     tidy, dates = load("отчет в 1с.xlsx")
 except Exception as e:
-    st.error(f"Не удалось прочитать «отчет в 1с.xlsx»: {e}. Положите файл рядом с app.py.");
+    st.error(f"Не удалось прочитать «отчет в 1с.xlsx»: {e}. Положите файл рядом с app.py.")
     st.stop()
 S = {k: ser(tidy, dates, k) for k in M}
 full = S["milk"] > 0.5 * S["milk"][S["milk"] > 0].median()
 
+# ---------- сайдбар ----------
 with st.sidebar:
     st.markdown('<div class="brand" style="font-size:17px">Беловежские <em>сыры</em></div>'
                 '<div class="tag" style="font-size:12px">панель аналитики</div>', unsafe_allow_html=True)
@@ -136,7 +147,7 @@ with st.sidebar:
     for name in ["Производство", "Продажи", "Сырье"]:
         if st.button(name, use_container_width=True,
                      type="primary" if st.session_state.nav == name else "secondary"):
-            st.session_state.nav = name;
+            st.session_state.nav = name
             st.rerun()
     st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
     lo, hi = st.slider("Дни периода", 1, len(dates), (1, len(dates)))
@@ -155,10 +166,10 @@ rate_days = max(1, int(full.reindex(sel, fill_value=False).sum()))
 
 
 def delta(k):
-    v = S[k][full.reindex(S[k].index, fill_value=False)];
+    v = S[k][full.reindex(S[k].index, fill_value=False)]
     v = v[v.index.isin(sel)]
     if len(v) < 2 or v.iloc[-2] == 0: return 0.0
-    return 100 * (v.iloc[-1] - v.iloc[-2]) / abs(v.iloc[-2])
+    return float(100 * (v.iloc[-1] - v.iloc[-2]) / abs(v.iloc[-2]))
 
 
 def card(col, title, val, unit, src, dkey=None, dec=0):
@@ -181,7 +192,8 @@ def head(t, s):
     st.markdown(f'<div class="hd"><p class="sec">{t}</p><p class="sub">{s}</p></div>', unsafe_allow_html=True)
 
 
-def ins(items): st.markdown("".join(f'<div class="ins">{t}</div>' for t in items), unsafe_allow_html=True)
+def ins(items):
+    st.markdown("".join(f'<div class="ins">{t}</div>' for t in items), unsafe_allow_html=True)
 
 
 def base(h=300, **over):
@@ -195,39 +207,28 @@ def base(h=300, **over):
     return d
 
 
-def ech(o, h="320px"): st_echarts(options=o, height=h)
-
-
-def cal_tooltip(label):
-    if JsCode is None:
-        return "{c} " + label
-    js = """function(p){
-        var v = p.value || [];
-        var s = String(v[0] || '');
-        var d = s.length >= 10 ? s.slice(8,10) + '.' + s.slice(5,7) : s;
-        var q = Number(v[1]);
-        if (!isFinite(q)) q = 0;
-        return '<b>' + d + '</b> · ' +
-               q.toLocaleString('ru-RU', {minimumFractionDigits:1, maximumFractionDigits:1}) +
-               ' __UNIT__';
-    }"""
-    return JsCode(js.replace("__UNIT__", label))
+def ech(o, h="320px"):
+    st_echarts(options=to_py(o), height=h)
 
 
 def calendar_opt(vals, mx, label):
+    """Календарь: месяц по-русски, в клетке число дня; количество — при наведении ({@[1]}) и цветом."""
     data = []
     for d, v in vals.items():
         d = pd.to_datetime(d)
         data.append({"name": str(d.day),
-                     "value": [d.strftime("%Y-%m-%d"), round(float(v), 1)]})
+                     "value": [d.strftime("%Y-%m-%d"), round(float(v), 1), d.strftime("%d.%m")]})
     return {
         "backgroundColor": "transparent",
-        "tooltip": {"trigger": "item", "confine": True, "formatter": cal_tooltip(label),
+        "tooltip": {"trigger": "item", "confine": True,
+                    "formatter": "{@[2]} · {@[1]} " + label,
                     "backgroundColor": PANEL, "borderColor": GOLD,
                     "textStyle": {"color": CREAM, "fontSize": 12}},
         "visualMap": {
             "min": 0, "max": max(float(mx), 1.0),
-            "dimension": 1, "seriesIndex": 0, "calculable": False,
+            "dimension": 1,
+            "seriesIndex": 0,
+            "calculable": False,
             "orient": "horizontal", "left": "center", "bottom": 10,
             "inRange": {"color": ["#132a21", SAGE, GOLD]},
             "textStyle": {"color": MUTED}
@@ -255,6 +256,7 @@ def calendar_opt(vals, mx, label):
     }
 
 
+# ---------- шапка ----------
 h1, h2 = st.columns([0.72, 0.28])
 with h1:
     st.markdown('<div class="brand">Беловежские <em>сыры</em></div>'
@@ -265,6 +267,7 @@ with h2:
                 unsafe_allow_html=True)
 st.markdown('<div class="rule"></div>', unsafe_allow_html=True)
 
+# ================= ПРОИЗВОДСТВО =================
 if nav == "Производство":
     cheese = W["p_cheese"] + W["p_pack"]
     c = st.columns(5)
@@ -276,17 +279,21 @@ if nav == "Производство":
     a, b = st.columns([1.5, 1])
     with a:
         head("Баланс молока, тн", "Реальные строки отчёта; невязка — потери и остаток сырья (расчёт)")
-        flows = [("Сыр весовой", W["p_cheese"].sum(), GOLD), ("Сыр фасованный", W["p_pack"].sum(), AMBER),
-                 ("Фета", W["p_feta"].sum(), SAGE), ("Масло", W["p_butter"].sum(), SKY),
-                 ("ГХИ", W["p_ghi"].sum(), "#b98f2e"), ("Сыворотка подсырная", W["p_whey"].sum(), "#5f8f7a"),
-                 ("Пахта", W["p_buth"].sum(), "#c98ba0"), ("Обрат", W["p_skim"].sum(), MUTED)]
-        gap = W["milk"].sum() - sum(v for _, v, _ in flows)
+        flows = [("Сыр весовой", float(W["p_cheese"].sum()), GOLD),
+                 ("Сыр фасованный", float(W["p_pack"].sum()), AMBER),
+                 ("Фета", float(W["p_feta"].sum()), SAGE),
+                 ("Масло", float(W["p_butter"].sum()), SKY),
+                 ("ГХИ", float(W["p_ghi"].sum()), "#b98f2e"),
+                 ("Сыворотка подсырная", float(W["p_whey"].sum()), "#5f8f7a"),
+                 ("Пахта", float(W["p_buth"].sum()), "#c98ba0"),
+                 ("Обрат", float(W["p_skim"].sum()), MUTED)]
+        gap = float(W["milk"].sum()) - sum(v for _, v, _ in flows)
         flows.append(("Потери / невязка", gap, "#41564c"))
         ech({"backgroundColor": "transparent", "tooltip": {"trigger": "item", "formatter": "{b}: {c} тн"},
              "series": [{"type": "sankey", "emphasis": {"focus": "adjacency"},
                          "data": [{"name": "Молоко", "itemStyle": {"color": GOLD}}] +
                                  [{"name": n, "itemStyle": {"color": cl}} for n, _, cl in flows],
-                         "links": [{"source": "Молоко", "target": n, "value": round(v, 1)} for n, v, _ in flows if
+                         "links": [{"source": "Молоко", "target": n, "value": round(float(v), 1)} for n, v, _ in flows if
                                    v > 0],
                          "lineStyle": {"color": "gradient", "curveness": .5, "opacity": .4},
                          "label": {"color": CREAM, "fontSize": 12}, "itemStyle": {"borderWidth": 0}}]}, "340px")
@@ -319,6 +326,7 @@ if nav == "Производство":
     ins([f"Выход сыра на 1 тн молока: {100 * cheese.sum() / W['milk'].sum():.2f}% — стабильность рецептуры.",
          "22.11 — неполный день: молоко 51 тн и сыр −1.3 тн (корректировка), исключён из дельт."])
 
+# ================= ПРОДАЖИ =================
 elif nav == "Продажи":
     loss = [d for d in sel if W["profit"].loc[d] < 0]
     c = st.columns(5)
@@ -379,7 +387,7 @@ elif nav == "Продажи":
                ("Масло", W["s_butter"].iloc[-1], (W["v_butter"] - W["v_ghi"]).sum()),
                ("ГХИ", W["s_ghi"].iloc[-1], W["v_ghi"].sum())]
         names = [n for n, _, _ in cov]
-        days = [round(s / (v / rate_days), 1) if v > 0 else 0 for _, s, v in cov]
+        days = [round(float(s / (v / rate_days)), 1) if v > 0 else 0 for _, s, v in cov]
         max_day = max(days) if days else 10
         fig = go.Figure(go.Bar(
             x=days, y=names, orientation="h", marker_color=GOLD,
@@ -394,6 +402,7 @@ elif nav == "Продажи":
     ins([f"Запас феты {W['s_feta'].iloc[-1]:.1f} тн при отгрузке {W['v_feta'].sum():.1f} тн — покрытие ≈ {days[1]} дней: сезон феты требует плана отгрузок.",
          "Все убыточные дни — отгрузки < 100 тыс ₽: постоянные затраты не покрываются в дни без отгрузок."])
 
+# ================= СЫРЬЕ =================
 else:
     wprice = (W["price"] * W["milk"]).sum() / W["milk"].sum()
     wprot = (W["protein"] * W["milk"]).sum() / W["milk"].sum()
@@ -433,10 +442,12 @@ else:
     with b:
         head("Цена приёмки, ₽/тн", "Минимумы совпадают с днями низкой сортности")
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=lbl, y=W["price"], mode="lines", line=dict(color=GOLD, width=2), name="Цена",
-                                 hovertemplate="%{y:.2f} ₽<extra></extra>"))
-        fig.add_trace(go.Scatter(x=lbl, y=W["price"], mode="markers", marker=dict(size=4, color=CREAM),
-                                 showlegend=False, hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=lbl, y=W["price"], mode="lines", line=dict(color=GOLD, width=2), name="Цена",
+            hovertemplate="%{y:.2f} ₽<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=lbl, y=W["price"], mode="markers", marker=dict(size=4, color=CREAM),
+            showlegend=False, hoverinfo="skip"))
         mn, mx = W["price"].idxmin(), W["price"].idxmax()
         p_lo, p_hi = float(W["price"].min()), float(W["price"].max())
         spread = (p_hi - p_lo) or 1.0
