@@ -1,4 +1,4 @@
-# app.py — Беловежские сыры · аналитика. Навигация в сайдбаре, без загрузчика, без сверки.
+# app.py — Беловежские сыры · аналитика. Вход по паролю, навигация в сайдбаре.
 import re
 import numpy as np
 import pandas as pd
@@ -11,7 +11,7 @@ st.set_page_config(page_title="Беловежские сыры · аналити
 PINE, PANEL, CREAM, MUTED = "#0d1f18", "#132a21", "#f2ede3", "#93a69b"
 GOLD, AMBER, SAGE, TERRA, SKY = "#d8b45a", "#e0a43c", "#7fa88f", "#c4574e", "#8fb6c9"
 GRID, PAL = "rgba(242,237,227,.06)", ["#d8b45a", "#7fa88f", "#e0a43c", "#8fb6c9", "#c4574e", "#93a69b"]
-RU_DAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]  # индекс 0 = воскресенье
+RU_DAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"]
 RU_MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь",
              "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
@@ -49,6 +49,29 @@ section[data-testid="stSidebar"] button[kind="primary"]{background:linear-gradie
   background:rgba(216,180,90,.05);border-radius:0 10px 10px 0}
 </style>""", unsafe_allow_html=True)
 
+
+# ---------- вход по паролю (без GitHub-аккаунтов у зрителей) ----------
+def gate():
+    if st.session_state.get("bc_auth"):
+        return
+    st.markdown('<div class="brand" style="margin-top:10vh">Беловежские <em>сыры</em></div>'
+                '<div class="tag">закрытая аналитика · введите пароль доступа</div>'
+                '<div class="rule"></div>', unsafe_allow_html=True)
+    pwd = st.text_input("Пароль доступа", type="password", placeholder="Пароль выдаёт владелец дашборда")
+    if pwd:
+        try:
+            expected = st.secrets.get("APP_PASSWORD", "belcheese-2026")
+        except Exception:
+            expected = "belcheese-2026"
+        if pwd == expected:
+            st.session_state["bc_auth"] = True
+            st.rerun()
+        st.error("Неверный пароль. Запросите доступ у владельца дашборда.")
+    st.stop()
+
+
+gate()
+
 # ---------- парсер: секции + имена строк ----------
 DATE_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
 
@@ -69,7 +92,6 @@ def fmt(x, d=0): return f"{float(x):,.{d}f}".replace(",", " ")
 
 
 def to_py(obj):
-    """numpy-типы -> стандартные Python-типы для JSON-сериализации ECharts."""
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, np.ndarray):
@@ -138,7 +160,6 @@ except Exception as e:
 S = {k: ser(tidy, dates, k) for k in M}
 full = S["milk"] > 0.5 * S["milk"][S["milk"] > 0].median()
 
-# ---------- сайдбар ----------
 with st.sidebar:
     st.markdown('<div class="brand" style="font-size:17px">Беловежские <em>сыры</em></div>'
                 '<div class="tag" style="font-size:12px">панель аналитики</div>', unsafe_allow_html=True)
@@ -153,6 +174,9 @@ with st.sidebar:
     lo, hi = st.slider("Дни периода", 1, len(dates), (1, len(dates)))
     use_partial = st.checkbox("Учитывать неполный последний день", True)
     st.download_button("Экспорт данных CSV", tidy.to_csv(index=False).encode("utf-8-sig"), "belcheese_data.csv")
+    if st.button("Выйти (сбросить пароль)", use_container_width=True):
+        st.session_state.pop("bc_auth", None)
+        st.rerun()
 
 nav = st.session_state.nav
 sel = dates[lo - 1:hi]
@@ -212,23 +236,21 @@ def ech(o, h="320px"):
 
 
 def calendar_opt(vals, mx, label):
-    """Календарь: месяц по-русски, в клетке число дня; количество — при наведении ({@[1]}) и цветом."""
+    """Календарь: в клетке число дня ({b}); при наведении — значение ({c}, проверенный шаблон)."""
     data = []
     for d, v in vals.items():
         d = pd.to_datetime(d)
         data.append({"name": str(d.day),
-                     "value": [d.strftime("%Y-%m-%d"), round(float(v), 1), d.strftime("%d.%m")]})
+                     "value": [d.strftime("%Y-%m-%d"), round(float(v), 1)]})
     return {
         "backgroundColor": "transparent",
         "tooltip": {"trigger": "item", "confine": True,
-                    "formatter": "{@[2]} · {@[1]} " + label,
+                    "formatter": "{c} " + label,
                     "backgroundColor": PANEL, "borderColor": GOLD,
                     "textStyle": {"color": CREAM, "fontSize": 12}},
         "visualMap": {
             "min": 0, "max": max(float(mx), 1.0),
-            "dimension": 1,
-            "seriesIndex": 0,
-            "calculable": False,
+            "dimension": 1, "seriesIndex": 0, "calculable": False,
             "orient": "horizontal", "left": "center", "bottom": 10,
             "inRange": {"color": ["#132a21", SAGE, GOLD]},
             "textStyle": {"color": MUTED}
@@ -256,7 +278,6 @@ def calendar_opt(vals, mx, label):
     }
 
 
-# ---------- шапка ----------
 h1, h2 = st.columns([0.72, 0.28])
 with h1:
     st.markdown('<div class="brand">Беловежские <em>сыры</em></div>'
